@@ -6,11 +6,12 @@
 //   npm run demo -- refund <mintA> <seed>   (close a leftover escrow)
 // Env: RPC_URL (default devnet), KEYPAIR (maker; default ~/.config/solana/id.json)
 // Confirmation polls over HTTP: the public devnet WebSocket drops connections.
+// Escrow instructions, PDAs and account decoding come from the Codama client
+// generated from the Anchor IDL (src/generated, `npm run generate`).
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
-  AccountRole,
   address,
   appendTransactionMessageInstructions,
   createKeyPairSignerFromBytes,
@@ -19,10 +20,7 @@ import {
   fetchEncodedAccount,
   generateKeyPairSigner,
   getBase64EncodedWireTransaction,
-  getAddressEncoder,
-  getProgramDerivedAddress,
   getSignatureFromTransaction,
-  getU64Encoder,
   pipe,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
@@ -31,9 +29,8 @@ import {
   type Instruction,
   type KeyPairSigner,
 } from "@solana/kit";
-import { getCreateAccountInstruction, getTransferSolInstruction, SYSTEM_PROGRAM_ADDRESS } from "@solana-program/system";
+import { getCreateAccountInstruction, getTransferSolInstruction } from "@solana-program/system";
 import {
-  ASSOCIATED_TOKEN_PROGRAM_ADDRESS,
   fetchToken,
   findAssociatedTokenPda,
   getCreateAssociatedTokenIdempotentInstruction,
@@ -42,22 +39,19 @@ import {
   getMintToInstruction,
   TOKEN_PROGRAM_ADDRESS,
 } from "@solana-program/token";
+import {
+  fetchEscrow,
+  findEscrowPda,
+  getMakeInstructionAsync,
+  getRefundInstructionAsync,
+  getTakeInstructionAsync,
+} from "./src/generated/index.js";
 
-const PROGRAM_ID = address("8emUGfskjPAGb2DaxtkgtcpSZhwfgoa3a6f8VipzSB5M");
 const RPC_URL = process.env.RPC_URL ?? "https://api.devnet.solana.com";
 const CLUSTER = RPC_URL.includes("devnet") ? "?cluster=devnet" : "";
 const DECIMALS = 6;
 
-// Anchor discriminators from target/idl/escrow.json
-const DISC = {
-  make: [138, 227, 232, 77, 223, 166, 96, 197],
-  take: [149, 226, 52, 104, 6, 142, 230, 39],
-  refund: [2, 96, 183, 251, 63, 208, 46, 46],
-};
-
 const rpc = createSolanaRpc(RPC_URL);
-const u64 = getU64Encoder();
-const addr = getAddressEncoder();
 
 async function loadMaker(): Promise<KeyPairSigner> {
   const path = process.env.KEYPAIR ?? `${homedir()}/.config/solana/id.json`;
@@ -111,13 +105,7 @@ async function waitForConfirmation(sig: ReturnType<typeof getSignatureFromTransa
 const ata = async (owner: Address, mint: Address) =>
   (await findAssociatedTokenPda({ owner, mint, tokenProgram: TOKEN_PROGRAM_ADDRESS }))[0];
 
-async function escrowPda(maker: Address, seed: bigint): Promise<Address> {
-  const [pda] = await getProgramDerivedAddress({
-    programAddress: PROGRAM_ID,
-    seeds: ["escrow", addr.encode(maker), u64.encode(seed)],
-  });
-  return pda;
-}
+const escrowPda = async (maker: Address, seed: bigint) => (await findEscrowPda({ maker, seed }))[0];
 
 async function createMint(payer: KeyPairSigner): Promise<Address> {
   const mint = await generateKeyPairSigner();
@@ -138,64 +126,16 @@ async function fund(authority: KeyPairSigner, owner: Address, mint: Address, amo
   ]);
 }
 
-const programs = [
-  { address: ASSOCIATED_TOKEN_PROGRAM_ADDRESS, role: AccountRole.READONLY },
-  { address: TOKEN_PROGRAM_ADDRESS, role: AccountRole.READONLY },
-  { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY },
-];
+// The generated builders fill in every ATA, the escrow PDA (for `make`) and
+// the program accounts from the PDA seeds recorded in the Anchor IDL.
+const ixMake = (maker: KeyPairSigner, mintA: Address, mintB: Address, seed: bigint, deposit: bigint, receive: bigint) =>
+  getMakeInstructionAsync({ maker, mintA, mintB, seed, deposit, receive });
 
-async function ixMake(maker: KeyPairSigner, mintA: Address, mintB: Address, seed: bigint, deposit: bigint, receive: bigint) {
-  const escrow = await escrowPda(maker.address, seed);
-  return {
-    programAddress: PROGRAM_ID,
-    data: new Uint8Array([...DISC.make, ...u64.encode(seed), ...u64.encode(deposit), ...u64.encode(receive)]),
-    accounts: [
-      { address: maker.address, role: AccountRole.WRITABLE_SIGNER, signer: maker },
-      { address: mintA, role: AccountRole.READONLY },
-      { address: mintB, role: AccountRole.READONLY },
-      { address: await ata(maker.address, mintA), role: AccountRole.WRITABLE },
-      { address: escrow, role: AccountRole.WRITABLE },
-      { address: await ata(escrow, mintA), role: AccountRole.WRITABLE },
-      ...programs,
-    ],
-  };
-}
+const ixTake = async (taker: KeyPairSigner, maker: Address, mintA: Address, mintB: Address, seed: bigint) =>
+  getTakeInstructionAsync({ taker, maker, mintA, mintB, escrow: await escrowPda(maker, seed) });
 
-async function ixTake(taker: KeyPairSigner, maker: Address, mintA: Address, mintB: Address, seed: bigint) {
-  const escrow = await escrowPda(maker, seed);
-  return {
-    programAddress: PROGRAM_ID,
-    data: new Uint8Array(DISC.take),
-    accounts: [
-      { address: taker.address, role: AccountRole.WRITABLE_SIGNER, signer: taker },
-      { address: maker, role: AccountRole.WRITABLE },
-      { address: mintA, role: AccountRole.READONLY },
-      { address: mintB, role: AccountRole.READONLY },
-      { address: await ata(taker.address, mintA), role: AccountRole.WRITABLE },
-      { address: await ata(taker.address, mintB), role: AccountRole.WRITABLE },
-      { address: await ata(maker, mintB), role: AccountRole.WRITABLE },
-      { address: escrow, role: AccountRole.WRITABLE },
-      { address: await ata(escrow, mintA), role: AccountRole.WRITABLE },
-      ...programs,
-    ],
-  };
-}
-
-async function ixRefund(maker: KeyPairSigner, mintA: Address, seed: bigint) {
-  const escrow = await escrowPda(maker.address, seed);
-  return {
-    programAddress: PROGRAM_ID,
-    data: new Uint8Array(DISC.refund),
-    accounts: [
-      { address: maker.address, role: AccountRole.WRITABLE_SIGNER, signer: maker },
-      { address: mintA, role: AccountRole.READONLY },
-      { address: await ata(maker.address, mintA), role: AccountRole.WRITABLE },
-      { address: escrow, role: AccountRole.WRITABLE },
-      { address: await ata(escrow, mintA), role: AccountRole.WRITABLE },
-      ...programs,
-    ],
-  };
-}
+const ixRefund = async (maker: KeyPairSigner, mintA: Address, seed: bigint) =>
+  getRefundInstructionAsync({ maker, mintA, escrow: await escrowPda(maker.address, seed) });
 
 const balance = async (owner: Address, mint: Address) => (await fetchToken(rpc, await ata(owner, mint))).data.amount;
 const log = (label: string, [sig, cu]: [string, bigint]) =>
@@ -226,7 +166,9 @@ await fund(maker, taker.address, mintB, 1_000n);
 
 console.log(`\nEscrow #1 (seed ${seed1}): make 400 A for 250 B, then take`);
 log("make", await send(maker, [await ixMake(maker, mintA, mintB, seed1, 400n, 250n)]));
-console.log(`  escrow ${await escrowPda(maker.address, seed1)}`);
+const escrow1 = await escrowPda(maker.address, seed1);
+const offer = await retry(() => fetchEscrow(rpc, escrow1));
+console.log(`  escrow ${offer.address}: wants ${offer.data.receive} of ${offer.data.mintB}`);
 log("take", await send(taker, [await ixTake(taker, maker.address, mintA, mintB, seed1)]));
 
 console.log(`\nEscrow #2 (seed ${seed2}): make 100 A for 50 B, then refund`);
