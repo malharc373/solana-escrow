@@ -40,7 +40,12 @@ struct Env {
 }
 
 /// Signs and sends; returns the logs on success, the logs on failure.
-fn send(svm: &mut LiteSVM, ixs: &[Instruction], payer: &Keypair, signers: &[&Keypair]) -> Result<Vec<String>, String> {
+fn send(
+    svm: &mut LiteSVM,
+    ixs: &[Instruction],
+    payer: &Keypair,
+    signers: &[&Keypair],
+) -> Result<Vec<String>, String> {
     let msg = Message::new_with_blockhash(ixs, Some(&payer.pubkey()), &svm.latest_blockhash());
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), signers).unwrap();
     let res = svm
@@ -56,12 +61,17 @@ fn ata(owner: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
 }
 
 fn balance(svm: &LiteSVM, token_account: &Pubkey) -> u64 {
-    let acc = svm.get_account(token_account).expect("token account exists");
-    TokenAccount::try_deserialize(&mut acc.data.as_slice()).unwrap().amount
+    let acc = svm
+        .get_account(token_account)
+        .expect("token account exists");
+    TokenAccount::try_deserialize(&mut acc.data.as_slice())
+        .unwrap()
+        .amount
 }
 
 fn is_closed(svm: &LiteSVM, address: &Pubkey) -> bool {
-    svm.get_account(address).map_or(true, |a| a.lamports == 0 && a.data.is_empty())
+    svm.get_account(address)
+        .is_none_or(|a| a.lamports == 0 && a.data.is_empty())
 }
 
 fn create_mint(svm: &mut LiteSVM, payer: &Keypair, token_program: &Pubkey) -> Pubkey {
@@ -74,19 +84,39 @@ fn create_mint(svm: &mut LiteSVM, payer: &Keypair, token_program: &Pubkey) -> Pu
             MINT_LEN as u64,
             token_program,
         ),
-        spl_token_2022::instruction::initialize_mint2(token_program, &mint.pubkey(), &payer.pubkey(), None, DECIMALS)
-            .unwrap(),
+        spl_token_2022::instruction::initialize_mint2(
+            token_program,
+            &mint.pubkey(),
+            &payer.pubkey(),
+            None,
+            DECIMALS,
+        )
+        .unwrap(),
     ];
     send(svm, &ixs, payer, &[payer, &mint]).unwrap();
     mint.pubkey()
 }
 
 /// Creates `owner`'s ATA for `mint` and mints `amount` into it (`authority` = mint authority).
-fn fund(svm: &mut LiteSVM, authority: &Keypair, owner: &Pubkey, mint: &Pubkey, token_program: &Pubkey, amount: u64) {
+fn fund(
+    svm: &mut LiteSVM,
+    authority: &Keypair,
+    owner: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+    amount: u64,
+) {
     let ixs = [
         create_associated_token_account(&authority.pubkey(), owner, mint, token_program),
-        spl_token_2022::instruction::mint_to(token_program, mint, &ata(owner, mint, token_program), &authority.pubkey(), &[], amount)
-            .unwrap(),
+        spl_token_2022::instruction::mint_to(
+            token_program,
+            mint,
+            &ata(owner, mint, token_program),
+            &authority.pubkey(),
+            &[],
+            amount,
+        )
+        .unwrap(),
     ];
     send(svm, &ixs, authority, &[authority]).unwrap();
 }
@@ -105,14 +135,39 @@ fn setup(token_program: Pubkey) -> Env {
     // The maker is mint authority for both mints in these tests.
     let mint_a = create_mint(&mut svm, &maker, &token_program);
     let mint_b = create_mint(&mut svm, &maker, &token_program);
-    fund(&mut svm, &maker, &maker.pubkey(), &mint_a, &token_program, 1_000);
-    fund(&mut svm, &maker, &taker.pubkey(), &mint_b, &token_program, 1_000);
+    fund(
+        &mut svm,
+        &maker,
+        &maker.pubkey(),
+        &mint_a,
+        &token_program,
+        1_000,
+    );
+    fund(
+        &mut svm,
+        &maker,
+        &taker.pubkey(),
+        &mint_b,
+        &token_program,
+        1_000,
+    );
 
-    Env { svm, token_program, maker, taker, mint_a, mint_b }
+    Env {
+        svm,
+        token_program,
+        maker,
+        taker,
+        mint_a,
+        mint_b,
+    }
 }
 
 fn escrow_pda(maker: &Pubkey, seed: u64) -> Pubkey {
-    Pubkey::find_program_address(&[ESCROW_SEED, maker.as_ref(), &seed.to_le_bytes()], &escrow::id()).0
+    Pubkey::find_program_address(
+        &[ESCROW_SEED, maker.as_ref(), &seed.to_le_bytes()],
+        &escrow::id(),
+    )
+    .0
 }
 
 fn ix_make(env: &Env, seed: u64, deposit: u64, receive: u64) -> Instruction {
@@ -120,7 +175,12 @@ fn ix_make(env: &Env, seed: u64, deposit: u64, receive: u64) -> Instruction {
     let escrow = escrow_pda(&maker, seed);
     Instruction::new_with_bytes(
         escrow::id(),
-        &instruction::Make { seed, deposit, receive }.data(),
+        &instruction::Make {
+            seed,
+            deposit,
+            receive,
+        }
+        .data(),
         accounts::Make {
             maker,
             mint_a: env.mint_a,
@@ -197,7 +257,9 @@ fn make_locks_tokens_in_a_pda_owned_vault() {
         assert_eq!(balance(&env.svm, &vault), 400);
         assert_eq!(balance(&env.svm, &ata(&maker, &env.mint_a, &tp)), 600);
 
-        let state = Escrow::try_deserialize(&mut env.svm.get_account(&escrow).unwrap().data.as_slice()).unwrap();
+        let state =
+            Escrow::try_deserialize(&mut env.svm.get_account(&escrow).unwrap().data.as_slice())
+                .unwrap();
         assert_eq!((state.seed, state.maker, state.receive), (1, maker, 250));
         assert_eq!((state.mint_a, state.mint_b), (env.mint_a, env.mint_b));
     }
@@ -211,18 +273,34 @@ fn take_swaps_atomically_and_closes_everything() {
         make(&mut env, 7, 400, 250);
         let escrow = escrow_pda(&maker, 7);
         let vault = ata(&escrow, &env.mint_a, &tp);
-        let locked_rent = env.svm.get_balance(&escrow).unwrap() + env.svm.get_balance(&vault).unwrap();
+        let locked_rent =
+            env.svm.get_balance(&escrow).unwrap() + env.svm.get_balance(&vault).unwrap();
         let maker_sol_before = env.svm.get_balance(&maker).unwrap();
 
         let ix = ix_take(&env, 7, &taker, &env.mint_b);
         send(&mut env.svm, &[ix], &env.taker, &[&env.taker]).unwrap();
 
-        assert_eq!(balance(&env.svm, &ata(&taker, &env.mint_a, &tp)), 400, "taker got the vault");
-        assert_eq!(balance(&env.svm, &ata(&taker, &env.mint_b, &tp)), 750, "taker paid 250 B");
-        assert_eq!(balance(&env.svm, &ata(&maker, &env.mint_b, &tp)), 250, "maker got 250 B");
+        assert_eq!(
+            balance(&env.svm, &ata(&taker, &env.mint_a, &tp)),
+            400,
+            "taker got the vault"
+        );
+        assert_eq!(
+            balance(&env.svm, &ata(&taker, &env.mint_b, &tp)),
+            750,
+            "taker paid 250 B"
+        );
+        assert_eq!(
+            balance(&env.svm, &ata(&maker, &env.mint_b, &tp)),
+            250,
+            "maker got 250 B"
+        );
         assert!(is_closed(&env.svm, &escrow) && is_closed(&env.svm, &vault));
         // The taker paid the tx fee and the new ATAs; the maker gets back exactly the rent they locked.
-        assert_eq!(env.svm.get_balance(&maker).unwrap(), maker_sol_before + locked_rent);
+        assert_eq!(
+            env.svm.get_balance(&maker).unwrap(),
+            maker_sol_before + locked_rent
+        );
     }
 }
 
@@ -238,7 +316,9 @@ fn refund_returns_the_vault_and_closes_everything() {
 
         let escrow = escrow_pda(&maker, 3);
         assert_eq!(balance(&env.svm, &ata(&maker, &env.mint_a, &tp)), 1_000);
-        assert!(is_closed(&env.svm, &escrow) && is_closed(&env.svm, &ata(&escrow, &env.mint_a, &tp)));
+        assert!(
+            is_closed(&env.svm, &escrow) && is_closed(&env.svm, &ata(&escrow, &env.mint_a, &tp))
+        );
     }
 }
 
@@ -253,7 +333,11 @@ fn one_maker_can_run_several_escrows() {
 
         let ix = ix_take(&env, 2, &env.taker.pubkey(), &env.mint_b);
         send(&mut env.svm, &[ix], &env.taker, &[&env.taker]).unwrap();
-        assert_eq!(balance(&env.svm, &ata(&escrow_pda(&maker, 1), &env.mint_a, &tp)), 100, "escrow 1 untouched");
+        assert_eq!(
+            balance(&env.svm, &ata(&escrow_pda(&maker, 1), &env.mint_a, &tp)),
+            100,
+            "escrow 1 untouched"
+        );
     }
 }
 
@@ -270,7 +354,10 @@ fn only_the_maker_can_refund() {
         let ix = ix_refund(&env, 5, &attacker.pubkey(), &maker);
         let logs = send(&mut env.svm, &[ix], &attacker, &[&attacker]).unwrap_err();
         assert!(logs.contains("ConstraintSeeds"), "unexpected logs:\n{logs}");
-        assert_eq!(balance(&env.svm, &ata(&escrow_pda(&maker, 5), &env.mint_a, &tp)), 400);
+        assert_eq!(
+            balance(&env.svm, &ata(&escrow_pda(&maker, 5), &env.mint_a, &tp)),
+            400
+        );
     }
 }
 
@@ -288,7 +375,13 @@ fn take_rejects_a_different_payment_mint() {
         let ix = ix_take(&env, 9, &taker.pubkey(), &fake_b);
         let logs = send(&mut env.svm, &[ix], &taker, &[&taker]).unwrap_err();
         assert!(logs.contains("InvalidMintB"), "unexpected logs:\n{logs}");
-        assert_eq!(balance(&env.svm, &ata(&escrow_pda(&env.maker.pubkey(), 9), &env.mint_a, &tp)), 400);
+        assert_eq!(
+            balance(
+                &env.svm,
+                &ata(&escrow_pda(&env.maker.pubkey(), 9), &env.mint_a, &tp)
+            ),
+            400
+        );
     }
 }
 
@@ -304,7 +397,10 @@ fn take_fails_atomically_if_the_taker_cannot_pay() {
         // Nothing moved: the vault is still full and the taker still has all their B.
         let escrow = escrow_pda(&env.maker.pubkey(), 4);
         assert_eq!(balance(&env.svm, &ata(&escrow, &env.mint_a, &tp)), 400);
-        assert_eq!(balance(&env.svm, &ata(&env.taker.pubkey(), &env.mint_b, &tp)), 1_000);
+        assert_eq!(
+            balance(&env.svm, &ata(&env.taker.pubkey(), &env.mint_b, &tp)),
+            1_000
+        );
     }
 }
 

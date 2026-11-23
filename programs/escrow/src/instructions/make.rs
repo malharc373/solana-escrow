@@ -83,6 +83,11 @@ pub fn handle_make(ctx: Context<Make>, seed: u64, deposit: u64, receive: u64) ->
         ctx.accounts.mint_a.decimals,
     )?;
 
-    msg!("Escrow {} opened: {} of A for {} of B", seed, deposit, receive);
+    msg!(
+        "Escrow {} opened: {} of A for {} of B",
+        seed,
+        deposit,
+        receive
+    );
     Ok(())
 }
