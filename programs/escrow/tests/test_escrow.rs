@@ -74,8 +74,12 @@ fn is_closed(svm: &LiteSVM, address: &Pubkey) -> bool {
         .is_none_or(|a| a.lamports == 0 && a.data.is_empty())
 }
 
-fn create_mint(svm: &mut LiteSVM, payer: &Keypair, token_program: &Pubkey) -> Pubkey {
-    let mint = Keypair::new();
+fn create_mint(
+    svm: &mut LiteSVM,
+    mint: &Keypair,
+    payer: &Keypair,
+    token_program: &Pubkey,
+) -> Pubkey {
     let ixs = [
         system_instruction::create_account(
             &payer.pubkey(),
@@ -93,7 +97,7 @@ fn create_mint(svm: &mut LiteSVM, payer: &Keypair, token_program: &Pubkey) -> Pu
         )
         .unwrap(),
     ];
-    send(svm, &ixs, payer, &[payer, &mint]).unwrap();
+    send(svm, &ixs, payer, &[payer, mint]).unwrap();
     mint.pubkey()
 }
 
@@ -127,14 +131,14 @@ fn setup(token_program: Pubkey) -> Env {
     let bytes = include_bytes!(concat!(env!("CARGO_TARGET_TMPDIR"), "/../deploy/escrow.so"));
     svm.add_program(escrow::id(), bytes).unwrap();
 
-    let maker = Keypair::new();
-    let taker = Keypair::new();
+    // Fixed keys: the same PDAs and bumps, so the same compute units, every run.
+    let [maker, taker, mint_a, mint_b] = [1, 2, 3, 4].map(|n| Keypair::new_from_array([n; 32]));
     svm.airdrop(&maker.pubkey(), 10 * SOL).unwrap();
     svm.airdrop(&taker.pubkey(), 10 * SOL).unwrap();
 
     // The maker is mint authority for both mints in these tests.
-    let mint_a = create_mint(&mut svm, &maker, &token_program);
-    let mint_b = create_mint(&mut svm, &maker, &token_program);
+    let mint_a = create_mint(&mut svm, &mint_a, &maker, &token_program);
+    let mint_b = create_mint(&mut svm, &mint_b, &maker, &token_program);
     fund(
         &mut svm,
         &maker,
@@ -369,7 +373,7 @@ fn take_rejects_a_different_payment_mint() {
 
         // The taker mints a worthless token and tries to pay with it.
         let taker = env.taker.insecure_clone();
-        let fake_b = create_mint(&mut env.svm, &taker, &tp);
+        let fake_b = create_mint(&mut env.svm, &Keypair::new(), &taker, &tp);
         fund(&mut env.svm, &taker, &taker.pubkey(), &fake_b, &tp, 1_000);
 
         let ix = ix_take(&env, 9, &taker.pubkey(), &fake_b);
@@ -420,4 +424,52 @@ fn make_rejects_zero_amounts_and_same_mint() {
         let logs = send(&mut env.svm, &[ix], &env.maker, &[&env.maker]).unwrap_err();
         assert!(logs.contains("SameMint"), "unexpected logs:\n{logs}");
     }
+}
+
+/// Sends one instruction that must succeed; returns the transaction's compute units.
+fn compute_units(svm: &mut LiteSVM, ix: Instruction, signer: &Keypair) -> u64 {
+    let msg = Message::new_with_blockhash(&[ix], Some(&signer.pubkey()), &svm.latest_blockhash());
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[signer]).unwrap();
+    let meta = svm
+        .send_transaction(tx)
+        .unwrap_or_else(|e| panic!("{:?}\n{}", e.err, e.meta.logs.join("\n")));
+    svm.expire_blockhash();
+    meta.compute_units_consumed
+}
+
+/// Writes `target/cu-report.json` for the compute-unit check in CI.
+fn write_cu_report(rows: &[(String, u64)]) {
+    let body: Vec<String> = rows
+        .iter()
+        .map(|(n, cu)| format!("  \"{n}\": {cu}"))
+        .collect();
+    let json = format!("{{\n{}\n}}\n", body.join(",\n"));
+    let path = concat!(env!("CARGO_TARGET_TMPDIR"), "/../cu-report.json");
+    std::fs::write(path, &json).unwrap();
+    println!("{json}");
+}
+
+#[test]
+fn cu_report() {
+    let mut rows = vec![];
+    for (tp, label) in TOKEN_PROGRAMS.into_iter().zip(["token", "token-2022"]) {
+        let mut env = setup(tp);
+        let (maker, taker) = (env.maker.insecure_clone(), env.taker.insecure_clone());
+        let mint_b = env.mint_b;
+        let steps = [
+            ("make", ix_make(&env, 1, 400, 250), &maker),
+            ("take", ix_take(&env, 1, &taker.pubkey(), &mint_b), &taker),
+            ("make again", ix_make(&env, 2, 100, 50), &maker),
+            (
+                "refund",
+                ix_refund(&env, 2, &maker.pubkey(), &maker.pubkey()),
+                &maker,
+            ),
+        ];
+        for (name, ix, signer) in steps {
+            let cu = compute_units(&mut env.svm, ix, signer);
+            rows.push((format!("{name} ({label})"), cu));
+        }
+    }
+    write_cu_report(&rows);
 }
