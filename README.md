@@ -69,7 +69,7 @@ anchor build
 cargo test
 ```
 
-Eight tests, each run against both token programs (16 scenarios, about 0.35 s).
+Eight tests, each run against both token programs (16 scenarios, about 0.35 s), plus `cu_report`, which writes compute units from fixed keys. On each pull request, [solana-cu-guard](https://github.com/malharc373/solana-cu-guard) fails the check if any instruction costs more than on the base commit.
 
 Devnet demo: creates two test mints and a fresh taker wallet, then runs make → take and make → refund. It uses the generated client in [`client/src/generated`](client/src/generated): typed instruction builders that resolve every ATA and PDA from the seeds in the IDL, account decoders (`fetchEscrow`), and error constants (`ESCROW_ERROR__INVALID_MINT_B`). Regenerate it after changing the program:
 
