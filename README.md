@@ -13,6 +13,8 @@ Built with **Anchor 1.1.2** and **anchor-spl** (`token_interface`, so it works w
 | Example `take` | [`4NXpGk…qhoJcQ`](https://explorer.solana.com/tx/4NXpGk8zMLC1PJgoJ1cpzeHauxMHJKa5qVaNRB8Nj16QzVgohx8z7F7jA9Vr1qss49zQhoJcQ9UxLt9D1WcJqhy7?cluster=devnet) |
 | Example `refund` | [`5SrfB3…YZfN`](https://explorer.solana.com/tx/5SrfB35VpgQH21cwhw4reyMcPoVgoBH7AzfGYRML7tymgp314nQg1KUJsQQHDyp9bmMkeab4V2Zn8iy1fRM9YZfN?cluster=devnet) |
 
+A [Pinocchio port](https://github.com/malharc373/solana-pinocchio-escrow) keeps the same instructions and state layout, and uses 25–40% fewer compute units.
+
 ## How it works
 
 ```
