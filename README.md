@@ -85,6 +85,12 @@ Run the demo:
 cd client && npm install && npm run demo
 ```
 
+Run the same demo against another deployment with the same interface, such as the [Pinocchio port](https://github.com/malharc373/solana-pinocchio-escrow) (`6xC3…djb3` on devnet):
+
+```bash
+PROGRAM_ID=6xC3JzDxzd6gbExiF4ob8GjsispfgNagfQgKS4x3djb3 npm run demo
+```
+
 Close an escrow you left open:
 
 ```bash

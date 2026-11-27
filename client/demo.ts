@@ -4,7 +4,8 @@
 // make → take on escrow #1 and make → refund on escrow #2, printing explorer
 // links and compute units for every escrow instruction.
 //   npm run demo -- refund <mintA> <seed>   (close a leftover escrow)
-// Env: RPC_URL (default devnet), KEYPAIR (maker; default ~/.config/solana/id.json)
+// Env: RPC_URL (default devnet), KEYPAIR (maker; default ~/.config/solana/id.json),
+//      PROGRAM_ID (another deployment with the same interface, e.g. the Pinocchio port)
 // Confirmation polls over HTTP: the public devnet WebSocket drops connections.
 // Escrow instructions, PDAs and account decoding come from the Codama client
 // generated from the Anchor IDL (src/generated, `npm run generate`).
@@ -52,6 +53,8 @@ const CLUSTER = RPC_URL.includes("devnet") ? "?cluster=devnet" : "";
 const DECIMALS = 6;
 
 const rpc = createSolanaRpc(RPC_URL);
+// Every generated builder and PDA helper takes the program to talk to.
+const program = process.env.PROGRAM_ID ? { programAddress: address(process.env.PROGRAM_ID) } : {};
 
 async function loadMaker(): Promise<KeyPairSigner> {
   const path = process.env.KEYPAIR ?? `${homedir()}/.config/solana/id.json`;
@@ -105,7 +108,7 @@ async function waitForConfirmation(sig: ReturnType<typeof getSignatureFromTransa
 const ata = async (owner: Address, mint: Address) =>
   (await findAssociatedTokenPda({ owner, mint, tokenProgram: TOKEN_PROGRAM_ADDRESS }))[0];
 
-const escrowPda = async (maker: Address, seed: bigint) => (await findEscrowPda({ maker, seed }))[0];
+const escrowPda = async (maker: Address, seed: bigint) => (await findEscrowPda({ maker, seed }, program))[0];
 
 async function createMint(payer: KeyPairSigner): Promise<Address> {
   const mint = await generateKeyPairSigner();
@@ -129,13 +132,13 @@ async function fund(authority: KeyPairSigner, owner: Address, mint: Address, amo
 // The generated builders fill in every ATA, the escrow PDA (for `make`) and
 // the program accounts from the PDA seeds recorded in the Anchor IDL.
 const ixMake = (maker: KeyPairSigner, mintA: Address, mintB: Address, seed: bigint, deposit: bigint, receive: bigint) =>
-  getMakeInstructionAsync({ maker, mintA, mintB, seed, deposit, receive });
+  getMakeInstructionAsync({ maker, mintA, mintB, seed, deposit, receive }, program);
 
 const ixTake = async (taker: KeyPairSigner, maker: Address, mintA: Address, mintB: Address, seed: bigint) =>
-  getTakeInstructionAsync({ taker, maker, mintA, mintB, escrow: await escrowPda(maker, seed) });
+  getTakeInstructionAsync({ taker, maker, mintA, mintB, escrow: await escrowPda(maker, seed) }, program);
 
 const ixRefund = async (maker: KeyPairSigner, mintA: Address, seed: bigint) =>
-  getRefundInstructionAsync({ maker, mintA, escrow: await escrowPda(maker.address, seed) });
+  getRefundInstructionAsync({ maker, mintA, escrow: await escrowPda(maker.address, seed) }, program);
 
 const balance = async (owner: Address, mint: Address) => (await fetchToken(rpc, await ata(owner, mint))).data.amount;
 const log = (label: string, [sig, cu]: [string, bigint]) =>
@@ -155,7 +158,7 @@ if (process.argv[2] === "refund") {
 const seed1 = BigInt(Date.now());
 const seed2 = seed1 + 1n;
 const taker = await generateKeyPairSigner();
-console.log(`maker ${maker.address}\ntaker ${taker.address} (fresh, funded with 0.05 SOL)`);
+console.log(`program ${"programAddress" in program ? program.programAddress : "default (Anchor)"}\nmaker ${maker.address}\ntaker ${taker.address} (fresh, funded with 0.05 SOL)`);
 await send(maker, [getTransferSolInstruction({ source: maker, destination: taker.address, amount: 50_000_000n })]);
 
 const mintA = await createMint(maker);
