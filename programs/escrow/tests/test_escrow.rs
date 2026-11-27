@@ -437,21 +437,9 @@ fn compute_units(svm: &mut LiteSVM, ix: Instruction, signer: &Keypair) -> u64 {
     meta.compute_units_consumed
 }
 
-/// Writes `target/cu-report.json` for the compute-unit check in CI.
-fn write_cu_report(rows: &[(String, u64)]) {
-    let body: Vec<String> = rows
-        .iter()
-        .map(|(n, cu)| format!("  \"{n}\": {cu}"))
-        .collect();
-    let json = format!("{{\n{}\n}}\n", body.join(",\n"));
-    let path = concat!(env!("CARGO_TARGET_TMPDIR"), "/../cu-report.json");
-    std::fs::write(path, &json).unwrap();
-    println!("{json}");
-}
-
 #[test]
 fn cu_report() {
-    let mut rows = vec![];
+    let mut report = cu_report::Report::new();
     for (tp, label) in TOKEN_PROGRAMS.into_iter().zip(["token", "token-2022"]) {
         let mut env = setup(tp);
         let (maker, taker) = (env.maker.insecure_clone(), env.taker.insecure_clone());
@@ -468,8 +456,8 @@ fn cu_report() {
         ];
         for (name, ix, signer) in steps {
             let cu = compute_units(&mut env.svm, ix, signer);
-            rows.push((format!("{name} ({label})"), cu));
+            report.record(format!("{name} ({label})"), cu);
         }
     }
-    write_cu_report(&rows);
+    report.write(cu_report::default_path!()).unwrap();
 }
